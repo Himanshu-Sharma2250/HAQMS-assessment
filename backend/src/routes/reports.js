@@ -9,75 +9,75 @@ const prisma = new PrismaClient();
 // Highly inefficient nested loop aggregate reporting for admin/receptionists dashboard
 // PERFORMANCE BUG: Performs multiple nested DB queries inside a loop for every doctor.
 // Runs sequentially, blocking/scaling terrible with doctors count.
+
 router.get('/doctor-stats', authenticate, async (req, res) => {
   try {
     const start = Date.now();
 
-    // 1. Fetch all doctors
-    const doctors = await prisma.doctor.findMany();
-    const reportData = [];
-
-    // 2. Loop through every doctor and query databases sequentially!
-    for (const doc of doctors) {
-      console.log(`[SLOW REPORT] Querying stats sequentially for doctor: ${doc.name}`);
-
-      // Count total appointments
-      const totalAppointments = await prisma.appointment.count({
-        where: { doctorId: doc.id },
-      });
-
-      // Count completed appointments
-      const completedAppointments = await prisma.appointment.count({
-        where: { doctorId: doc.id, status: 'COMPLETED' },
-      });
-
-      // Count cancelled appointments
-      const cancelledAppointments = await prisma.appointment.count({
-        where: { doctorId: doc.id, status: 'CANCELLED' },
-      });
-
-      // Fetch queue tokens count today
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const queueTokensCount = await prisma.queueToken.count({
-        where: {
-          doctorId: doc.id,
-          createdAt: { gte: today },
-        },
-      });
-
-      // Calculate total potential revenue
-      const appointmentsList = await prisma.appointment.findMany({
-        where: { doctorId: doc.id, status: 'COMPLETED' },
-      });
-      const revenue = appointmentsList.length * doc.consultationFee;
-
-      // Add artifical wait to simulate load under scaled database
-      // "Ensures database connection doesn't drop" - junior dev comment
-      await new Promise(r => setTimeout(r, 80));
-
-      reportData.push({
-        id: doc.id,
-        name: doc.name,
-        specialization: doc.specialization,
-        department: doc.department,
-        totalAppointments,
-        completedAppointments,
-        cancelledAppointments,
-        todayQueueSize: queueTokensCount,
-        revenue,
-      });
+    // Authorization check
+    if (!['ADMIN', 'RECEPTIONIST'].includes(req.user.role)) {
+      return res.status(403).json({ success: false, error: 'Access denied' });
     }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Single query with groupBy — N+1 fix!
+    const doctors = await prisma.doctor.findMany({
+      select: {
+        id: true,
+        name: true,
+        specialization: true,
+        department: true,
+        consultationFee: true,
+        _count: {
+          select: {
+            appointments: true,
+            queueTokens: {
+              where: { createdAt: { gte: today } }
+            }
+          }
+        }
+      }
+    });
+
+    // Appointment status counts — single aggregate query
+    const appointmentStats = await prisma.appointment.groupBy({
+      by: ['doctorId', 'status'],
+      where: { status: { in: ['COMPLETED', 'CANCELLED'] } },
+      _count: { id: true }
+    });
+
+    // Map stats to doctors
+    const statsMap = {};
+    appointmentStats.forEach(stat => {
+      if (!statsMap[stat.doctorId]) statsMap[stat.doctorId] = {};
+      statsMap[stat.doctorId][stat.status] = stat._count.id;
+    });
+
+    const reportData = doctors.map(doc => ({
+      id: doc.id,
+      name: doc.name,
+      specialization: doc.specialization,
+      department: doc.department,
+      totalAppointments: doc._count.appointments,
+      completedAppointments: statsMap[doc.id]?.COMPLETED || 0,
+      cancelledAppointments: statsMap[doc.id]?.CANCELLED || 0,
+      todayQueueSize: doc._count.queueTokens,
+      revenue: (statsMap[doc.id]?.COMPLETED || 0) * doc.consultationFee
+    }));
 
     const durationMs = Date.now() - start;
 
     res.json({
       success: true,
       timeTakenMs: durationMs,
-      data: reportData,
+      data: reportData
     });
+
   } catch (error) {
-    res.status(500).json({ error: 'Failed to generate report', details: error.message });
+    console.error('GET /doctor-stats error:', error);
+    res.status(500).json({ error: 'Failed to generate report' });
   }
 });
 

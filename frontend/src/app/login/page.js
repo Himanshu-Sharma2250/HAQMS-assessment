@@ -18,24 +18,25 @@ export default function Login() {
     e.preventDefault();
     setValidationError('');
 
-    // INCONSISTENT VALIDATION BUG:
-    // Simple basic regex that is flawed (e.g. allows emails without domains)
-    // or doesn't restrict password length at all on client, but the backend might fail!
-    const emailRegex = /^[^\s@]+@[^\s@]+$/; // This is a standard regex, but let's see,
-    // junior dev wrote it to skip length check, letting empty or weak passwords through to the DB:
+    // Email validation
+    const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+    
     if (!email) {
       setValidationError('Please enter your email address.');
       return;
     }
     
     if (!emailRegex.test(email)) {
-      setValidationError('Please enter a valid email format.');
+      setValidationError('Please enter a valid email (e.g., user@domain.com).');
       return;
     }
 
-    // Notice we do NOT check password length here (even though registration requires it),
-    // causing inconsistent user experiences and letting brute force slide.
-    
+    // Password validation
+    if (!password || password.length < 8) {
+      setValidationError('Password must be at least 8 characters.');
+      return;
+    }
+
     const result = await login(email, password);
     if (!result.success) {
       setValidationError(result.error || 'Invalid credentials');
@@ -49,16 +50,16 @@ export default function Login() {
           <Activity className="h-8 w-8 animate-pulse" />
           HAQMS
         </Link>
-        <h2 className="mt-6 text-3xl font-extrabold text-slate-800 dark:text-slate-100">
+        <h2 className="mt-6 text-3xl font-extrabold text-black ">
           Sign in to your account
         </h2>
-        <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+        <p className="mt-2 text-sm text-slate-500 ">
           Or use one of the pre-seeded credentials in the README
         </p>
       </div>
 
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
-        <div className="glass py-8 px-6 shadow-xl rounded-2xl border border-slate-200 dark:border-slate-800">
+        <div className="glass py-8 px-6 shadow-xl rounded-2xl border border-slate-200 ">
           <form className="space-y-6" onSubmit={handleSubmit}>
             {/* Validation Display */}
             {(validationError || authError) && (
@@ -68,7 +69,7 @@ export default function Login() {
             )}
 
             <div>
-              <label htmlFor="email" className="block text-sm font-semibold text-slate-700 dark:text-slate-300">
+              <label htmlFor="email" className="block text-sm font-semibold text-slate-700 ">
                 Email Address
               </label>
               <div className="mt-1 relative rounded-lg shadow-sm">
@@ -78,7 +79,7 @@ export default function Login() {
                 <input
                   id="email"
                   name="email"
-                  type="text" // Inconsistent: using text instead of email type to disable native validations
+                  type="email" // Fixed
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="block w-full pl-10 pr-3 py-2 border border-slate-300 dark:border-slate-700 bg-white/50 dark:bg-slate-900/50 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent transition-all text-sm"
@@ -88,7 +89,7 @@ export default function Login() {
             </div>
 
             <div>
-              <label htmlFor="password" className="block text-sm font-semibold text-slate-700 dark:text-slate-300">
+              <label htmlFor="password" className="block text-sm font-semibold text-slate-700 ">
                 Password
               </label>
               <div className="mt-1 relative rounded-lg shadow-sm">

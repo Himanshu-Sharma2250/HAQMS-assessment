@@ -1,6 +1,7 @@
 const express = require('express');
 const { PrismaClient } = require('@prisma/client');
 const { authenticate } = require('../middleware/auth');
+const { getAppointmentSchema, createAppointmentSchema, updateAppointmentSchema } = require('../vaidation/appointment.validation');
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -12,48 +13,54 @@ const prisma = new PrismaClient();
 // individual select statements for Patient and Doctor details.
 router.get('/', authenticate, async (req, res) => {
   try {
-    const { doctorId, status } = req.query;
+    const {data, error} = getAppointmentSchema.safeParse(req.params);
+
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    const { doctorId, status } = data;
 
     const where = {};
     if (doctorId) where.doctorId = doctorId;
     if (status) where.status = status;
 
+    // FIX: use incude to get the required data without loop
     // Fetch core appointments
     const appointments = await prisma.appointment.findMany({
       where,
       orderBy: { appointmentDate: 'asc' },
+      include: {
+        patient: {
+          select: { id: true, name: true, phoneNumber: true, age: true, medicalHistory: true }
+        },
+        doctor: {
+          select: { id: true, name: true, specialization: true }
+        }
+      }
     });
-
-    const detailedAppointments = [];
-
-    // N+1 triggers here: For every single appointment, we perform two extra queries!
-    for (const app of appointments) {
-      console.log(`[N+1 DB QUERY] Fetching Patient (${app.patientId}) and Doctor (${app.doctorId}) for Appointment ${app.id}`);
-      
-      const patient = await prisma.patient.findUnique({
-        where: { id: app.patientId },
-      });
-
-      const doctor = await prisma.doctor.findUnique({
-        where: { id: app.doctorId },
-      });
-
-      detailedAppointments.push({
-        ...app,
-        patient: patient ? { id: patient.id, name: patient.name, phoneNumber: patient.phoneNumber, age: patient.age, medicalHistory: patient.medicalHistory } : null,
-        doctor: doctor ? { id: doctor.id, name: doctor.name, specialization: doctor.specialization } : null,
-      });
-    }
 
     res.json({
       success: true,
-      count: detailedAppointments.length,
-      appointments: detailedAppointments,
+      count: appointments.length,
+      appointments
     });
   } catch (error) {
-    res.status(500).json({ error: 'Failed to retrieve appointments', details: error.message });
+    console.error('GET /appointments error:', error);
+    res.status(500).json({ error: 'Failed to retrieve appointments' });
   }
 });
+
+// Slot normalize karo — har 30 min ka slot
+const SLOT_MINUTES = 30;
+
+const normalizeToSlot = (date) => {
+  const d = new Date(date);
+  const minutes = d.getMinutes();
+  const slotMinutes = Math.floor(minutes / SLOT_MINUTES) * SLOT_MINUTES;
+  d.setMinutes(slotMinutes, 0, 0);
+  return d;
+}
 
 // POST /api/appointments
 // Book an appointment
@@ -62,18 +69,25 @@ router.get('/', authenticate, async (req, res) => {
 // allowing multiple bookings for the exact same date and doctor.
 router.post('/', authenticate, async (req, res) => {
   try {
-    const { patientId, doctorId, appointmentDate, reason } = req.body;
+    const {data, error} = createAppointmentSchema.safeParse(req.body);
+
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    const { patientId, doctorId, appointmentDate, reason } = data;
 
     if (!patientId || !doctorId || !appointmentDate) {
       return res.status(400).json({ error: 'Patient, Doctor, and Appointment Date are required.' });
     }
 
-    const appDate = new Date(appointmentDate);
+    const appDate = normalizeToSlot(appointmentDate);
 
     // Flawed duplicate check:
     // It only checks if the exact millisecond matches. If the candidate books for "2026-05-25 10:00:00"
     // and another for "2026-05-25 10:00:01", they are treated as unique!
     // Junior dev logic: "Same time bookings will be blocked."
+    // Fix:
     const existingBooking = await prisma.appointment.findFirst({
       where: {
         doctorId,
@@ -99,11 +113,13 @@ router.post('/', authenticate, async (req, res) => {
     });
 
     res.status(201).json({
+      success: true,
       message: 'Appointment booked successfully',
       appointment,
     });
   } catch (error) {
-    res.status(500).json({ error: 'Failed to book appointment', details: error.message });
+    console.error('POST /appointments error:', error);
+    res.status(500).json({ error: 'Failed to book appointment' });
   }
 });
 
@@ -111,10 +127,37 @@ router.post('/', authenticate, async (req, res) => {
 // Update appointment status (COMPLETED, CANCELLED, etc.)
 router.patch('/:id', authenticate, async (req, res) => {
   try {
-    const { status } = req.body;
+    const {data, error} = updateAppointmentSchema.safeParse(req.body);
+
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    const { status } = data;
+
+    if (!req.params.id || !z.string().uuid().safeParse(req.params.id).success) {
+      return res.status(400).json({ error: 'Invalid appointment ID' });
+    }
 
     if (!status) {
       return res.status(400).json({ error: 'Status is required' });
+    }
+
+    // check if appointment exist or not 
+    const appointment = await prisma.appointment.findUnique({
+      where: { id: req.params.id }
+    });
+
+    if (!appointment) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
+
+    const isOwner = appointment.patientId === req.user.id;
+    const isDoctor = appointment.doctorId === req.user.id;
+    const isAdmin = req.user.role === 'ADMIN';
+
+    if (!isOwner && !isDoctor && !isAdmin) {
+      return res.status(403).json({ error: 'Access denied. Not your appointment.' });
     }
 
     const updated = await prisma.appointment.update({
@@ -122,9 +165,14 @@ router.patch('/:id', authenticate, async (req, res) => {
       data: { status },
     });
 
-    res.json(updated);
+    res.json({
+      success: true,
+      message: 'Appointment updated successfully',
+      appointment: updated
+    });
   } catch (error) {
-    res.status(500).json({ error: 'Failed to update appointment', details: error.message });
+    console.error('PATCH /appointments/:id error:', error);
+    res.status(500).json({ error: 'Failed to update appointment' });
   }
 });
 

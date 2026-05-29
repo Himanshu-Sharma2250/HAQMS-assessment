@@ -1,30 +1,31 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Navbar from '@/components/common/Navbar';
 import { Activity, Bell, Monitor, RefreshCw, AlertCircle } from 'lucide-react';
+import toast from 'react-hot-toast';
 
 export default function QueueMonitor() {
   const [tokens, setTokens] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const refreshCountRef = useRef(0);
   
-  // Duplicated config state just to add minor code smell
-  const [refreshCount, setRefreshCount] = useState(0);
-
-  // HARDCODED API BASE URL: Duplicated from AuthContext (code duplication smell)
-  const API_BASE_URL = 'http://localhost:5000/api';
+  const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
 
   const fetchQueueData = async () => {
     try {
-      // Insecure: Fetches queue without checking credentials (it's a public dashboard, which is fine, 
-      // but it uses the hardcoded API domain)
-      const res = await fetch(`${API_BASE_URL}/queue`);
+      const res = await fetch(`${API_BASE_URL}/queue`, {
+        credentials: 'include'
+      });
+      
       if (!res.ok) {
+        toast.error("Failed to retrieve active token queue")
         throw new Error('Failed to retrieve active token queue.');
       }
-      const data = await res.json();
-      setTokens(data);
+      
+      const result = await res.json();
+      setTokens(result.data || result);  // Handle wrapped/unwrapped
       setError('');
     } catch (err) {
       console.error('Queue poll fetch error:', err);
@@ -35,32 +36,24 @@ export default function QueueMonitor() {
   };
 
   useEffect(() => {
-    // Initial fetch
     fetchQueueData();
 
-    // MEMORY LEAK BUG:
-    // This setInterval has NO cleanup function (does not return clearInterval).
-    // Every time this page is mounted, a new background polling timer is spun up.
-    // If the candidate navigates between Dashboard and Queue multiple times,
-    // dozens of parallel intervals will poll the database, causing memory bloat,
-    // state update crashes on unmounted components, and heavy server load.
     const intervalId = setInterval(() => {
-      console.log(`[POLL] Active Queue Poll #${refreshCount + 1} firing...`);
+      refreshCountRef.current += 1;
+      console.log(`[POLL] Active Queue Poll #${refreshCountRef.current} firing...`);
       fetchQueueData();
-      setRefreshCount((prev) => prev + 1);
     }, 3000);
 
-    // Junior Developer Note: "Interval created, will run forever to keep dashboard fully synced!"
-    // Missing: return () => clearInterval(intervalId);
-  }, []); // Note that refreshCount dependency is missing too, causing stale closure on log!
+    return () => clearInterval(intervalId);  // Memory leak fix!
+  }, []);
 
   // Group tokens by doctor
   const groupedTokens = tokens.reduce((groups, token) => {
     const docId = token.doctorId;
     if (!groups[docId]) {
       groups[docId] = {
-        doctorName: token.doctor.name,
-        specialization: token.doctor.specialization,
+        doctorName: token.doctor?.name || 'Unknown Doctor',     
+        specialization: token.doctor?.specialization || 'General', 
         calling: null,
         waiting: [],
       };
@@ -80,28 +73,28 @@ export default function QueueMonitor() {
       
       <main className="flex-1 max-w-7xl w-full mx-auto p-6 sm:p-8">
         {/* Header Dashboard Banner */}
-        <div className="glass p-6 sm:p-8 rounded-2xl shadow-lg border border-slate-200 dark:border-slate-800 mb-8 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div className="glass p-6 sm:p-8 rounded-2xl shadow-lg border border-slate-200  mb-8 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
           <div className="flex items-center gap-3">
-            <div className="p-3 bg-teal-500/10 text-teal-600 dark:text-teal-400 rounded-xl">
+            <div className="p-3 bg-teal-500/10 text-teal-600  rounded-xl">
               <Monitor className="h-6 w-6" />
             </div>
             <div>
-              <h1 className="text-2xl font-extrabold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+              <h1 className="text-2xl font-extrabold text-slate-800  flex items-center gap-2">
                 Live Public Monitor Board
               </h1>
-              <p className="text-xs text-slate-400 dark:text-slate-400 font-semibold mt-1">
+              <p className="text-xs text-slate-400  font-semibold mt-1">
                 Real-time physician calling boards. Auto-syncs every 3 seconds.
               </p>
             </div>
           </div>
           
           <div className="flex items-center gap-3">
-            <span className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-teal-500/15 text-teal-600 dark:text-teal-400 text-xs font-bold uppercase tracking-wide border border-teal-500/20">
+            <span className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-teal-500/15 text-teal-600  text-xs font-bold uppercase tracking-wide border border-teal-500/20">
               <RefreshCw className="h-3.5 w-3.5 animate-spin" />
               Auto Refreshing
             </span>
-            <div className="p-2 bg-slate-100 dark:bg-slate-800 rounded-lg text-slate-400 text-xs font-mono">
-              Polls: {refreshCount}
+            <div className="p-2 bg-slate-100  rounded-lg text-slate-400 text-xs font-mono">
+              Polls: {refreshCountRef.current}
             </div>
           </div>
         </div>
@@ -128,8 +121,8 @@ export default function QueueMonitor() {
         ) : Object.keys(groupedTokens).length === 0 ? (
           <div className="glass p-12 text-center rounded-2xl border border-dashed border-slate-200 dark:border-slate-800">
             <Bell className="h-12 w-12 text-slate-400 mx-auto animate-bounce" />
-            <h3 className="mt-4 text-lg font-bold text-slate-800 dark:text-slate-100">No Active Tokens</h3>
-            <p className="mt-2 text-slate-500 dark:text-slate-400 text-sm max-w-md mx-auto">
+            <h3 className="mt-4 text-lg font-bold text-slate-800 ">No Active Tokens</h3>
+            <p className="mt-2 text-slate-500  text-sm max-w-md mx-auto">
               There are currently no patient check-ins registered for today. Use the receptionist portal in the Staff Dashboard to check-in patients.
             </p>
           </div>
@@ -143,8 +136,8 @@ export default function QueueMonitor() {
               >
                 {/* Doctor Title Header */}
                 <div className="bg-slate-500/5 p-5 border-b border-slate-200 dark:border-slate-800">
-                  <h3 className="font-extrabold text-lg text-slate-800 dark:text-slate-100">{docInfo.doctorName}</h3>
-                  <p className="text-xs text-teal-600 dark:text-teal-400 font-bold uppercase tracking-wider mt-0.5">
+                  <h3 className="font-extrabold text-lg text-slate-800 ">{docInfo.doctorName}</h3>
+                  <p className="text-xs text-teal-600  font-bold uppercase tracking-wider mt-0.5">
                     {docInfo.specialization}
                   </p>
                 </div>
@@ -160,7 +153,7 @@ export default function QueueMonitor() {
                       <div className="bg-teal-500/10 dark:bg-teal-500/5 border border-teal-500/30 p-6 rounded-2xl text-center shadow-inner relative overflow-hidden group">
                         {/* Glowing radial accent */}
                         <div className="absolute inset-0 bg-radial-gradient(circle, rgba(20,184,166,0.1) 0%, transparent 80%) opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                        <span className="block text-5xl font-black text-teal-600 dark:text-teal-400 tracking-wider animate-pulse">
+                        <span className="block text-5xl font-black text-teal-600  tracking-wider animate-pulse">
                           #{docInfo.calling.tokenNumber}
                         </span>
                         <span className="block text-xs font-bold text-slate-400 uppercase tracking-wide mt-2">
@@ -169,10 +162,10 @@ export default function QueueMonitor() {
                       </div>
                     ) : (
                       <div className="bg-slate-100 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800/80 p-6 rounded-2xl text-center shadow-inner">
-                        <span className="block text-2xl font-extrabold text-slate-400 dark:text-slate-500 tracking-wider italic">
+                        <span className="block text-2xl font-extrabold text-slate-800  tracking-wider italic">
                           Idle
                         </span>
-                        <span className="block text-xs font-medium text-slate-400 mt-2">
+                        <span className="block text-xs font-medium text-slate-800 mt-2">
                           No active patients being called
                         </span>
                       </div>
@@ -189,7 +182,7 @@ export default function QueueMonitor() {
                         {docInfo.waiting.map((token) => (
                           <div
                             key={token.id}
-                            className="px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-300"
+                            className="px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-700 "
                             title={`Patient: ${token.patient.name}`}
                           >
                             #{token.tokenNumber}
@@ -197,7 +190,7 @@ export default function QueueMonitor() {
                         ))}
                       </div>
                     ) : (
-                      <span className="text-xs text-slate-400 dark:text-slate-500 italic block">
+                      <span className="text-xs text-slate-400  italic block">
                         No upcoming patients in queue
                       </span>
                     )}
