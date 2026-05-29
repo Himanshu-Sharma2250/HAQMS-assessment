@@ -68,6 +68,23 @@ app.use((err, req, res, next) => {
   });
 });
 
+app.get('/admin/seed', async (req, res) => {
+  const secretKey = req.query.key;
+  
+  // Check secret key so nobody can randomly seed your DB
+  if (secretKey !== process.env.SEED_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  
+  exec('npm run prisma:seed', { cwd: __dirname }, (error, stdout, stderr) => {
+    if (error) {
+      console.error(`Error: ${error}`);
+      return res.status(500).json({ error: 'Seeding failed', details: stderr });
+    }
+    res.json({ message: 'Seeding completed!', output: stdout });
+  });
+});
+
 
 // Listen on port
 app.listen(PORT, () => {
